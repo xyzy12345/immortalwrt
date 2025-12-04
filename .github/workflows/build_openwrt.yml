@@ -10,52 +10,43 @@ on:
         required: true
         default: 'z8102ax-v2-emmc'
         type: string
-      # 你可以根据需要添加更多输入项，例如：
-      # build_packages:
-      #   description: 'Custom package list'
-      #   required: false
-      #   default: ''
 
-  # 你也可以启用推送代码时自动编译（首次测试建议先用手动触发）
+  # 你也可以启用推送代码时自动编译
   # push:
   #   branches: [ "main" ]
   #   paths:
-  #     - 'target/linux/**'  # 仅当设备树或内核相关文件更改时触发
+  #     - 'target/linux/**'
   #     - '.github/workflows/**'
 
-# 全局环境变量，此处设置最常用和关键的配置
+# 全局环境变量
 env:
   # ============ 【必须修改】 你的仓库信息 ============
-  # 修改为你的 ImmortalWrt fork 仓库地址
   REPO_URL: "https://github.com/xyzy12345/immortalwrt"
-  # 修改为你的工作分支
   REPO_BRANCH: "main"
   # ============ 【必须修改】 你的目标设备 ============
-  # 修改为你在 mt7981.mk 文件中定义的设备标识符
   DEFAULT_TARGET_DEVICE: "z8102ax-v2-emmc"
   # ==============================================
 
-  # 高级选项（通常无需修改）
+  # 高级选项
   FEEDS_CONF: "feeds.conf.default"
-  # 设置编译线程数，GitHub 免费容器通常为2核
+  # 设置编译线程数
   MAKE_JOBS: 2
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # GitHub 免费用户的编译时间限制是 6 小时，这个超时设置是安全的
     timeout-minutes: 350
 
     steps:
-    # 步骤 1: 检出你的 ImmortalWrt 源码
+    # 步骤 1: 检出源码
     - name: Checkout ImmortalWrt source
       uses: actions/checkout@v4
       with:
-        repository: ${{ github.repository }} # 默认为当前仓库，通常无需修改
-        ref: ${{ github.ref }}               # 默当前分支
-        path: openwrt                        # 将代码检出到 “openwrt” 子目录
+        repository: ${{ github.repository }}
+        ref: ${{ github.ref }}
+        path: openwrt
 
-    # 步骤 2: 安装所有必需的编译依赖（这是 ImmortalWrt/OpenWrt 编译的关键）
+    # 步骤 2: 安装编译依赖
     - name: Install build dependencies
       run: |
         sudo apt-get update
@@ -76,81 +67,100 @@ jobs:
           file \
           wget \
           quilt
-        # 新增以下关键包，用于解决32位工具链编译问题（如flock）
+        # 用于解决32位工具链编译问题
         sudo apt-get install -y libc6-dev-i386 g++-multilib lib32stdc++6 lib32z1-dev
 
-    # 步骤 3: 进入目录并更新 feeds (软件包源)
+    # 步骤 3: 更新和安装 feeds
     - name: Update and install feeds
       run: |
         cd openwrt
-        # 更新所有 feeds
         ./scripts/feeds update -a
-        # 安装所有 feeds 包
         ./scripts/feeds install -a
 
-    # 步骤 4: 应用默认配置并选中你的设备
+    # 步骤 4: 应用设备配置
     - name: Apply configuration for target device
       run: |
         cd openwrt
-        # 生成默认配置框架
+        # 获取目标设备名称（手动输入或使用默认值）
+        TARGET_DEVICE="${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}"
+        
+        # 方法1: 使用 defconfig 并设置配置
         make defconfig
-        # 核心步骤：将你的设备设置为编译目标
-        # 这行命令会确保在 .config 文件中选中 `CONFIG_TARGET_$DEVICE=y`
-        echo "CONFIG_TARGET_${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}=y" >> .config
-        # 运行 oldconfig 来处理依赖并确认其他选项
+        
+        # 对于 mt7981 设备，通常需要设置这两个配置
+        echo "CONFIG_TARGET_mediatek=y" >> .config
+        echo "CONFIG_TARGET_mediatek_mt7981=y" >> .config
+        
+        # 根据具体设备设置profile（需要查看你的设备定义）
+        # 假设你的设备在 target/linux/mediatek/mt7981/base-files/etc/board.d/01_leds
+        # 通常格式是 CONFIG_TARGET_DEVICE_mediatek_mt7981_DEVICE_$DEVICE=y
+        echo "CONFIG_TARGET_DEVICE_mediatek_mt7981_DEVICE_$TARGET_DEVICE=y" >> .config
+        
+        # 运行 oldconfig 处理依赖
         make oldconfig
+        
+        # 显示配置摘要
+        echo "=== 当前配置摘要 ==="
+        grep "CONFIG_TARGET\|CONFIG_DEVICE" .config | head -20
 
-    # 步骤 5: 下载编译所需的工具链和软件包（耗时步骤）
-    - name: Download dependencies
+    # 步骤 5: 下载依赖和工具链
+    - name: Download dependencies and build tools
       run: |
         cd openwrt
-        # 强制下载所有依赖，即使之前缓存过也重新检查
+        echo "=== 开始下载依赖 ==="
         make -j${{ env.MAKE_JOBS }} download V=s
-    # --- 新增步骤：优先构建并安装宿主工具链 ---
-    - name: Build and install host tools
-      run: |
-        cd openwrt
-        echo "=== 开始构建宿主工具链（这是解决flock错误的关键）==="
-        # 这步会构建并安装gcc等所有host工具到 staging_dir/host/
+        
+        echo "=== 开始构建宿主工具链 ==="
         make -j${{ env.MAKE_JOBS }} tools/install V=s
+        
         echo "=== 宿主工具链构建完成 ==="
-        # 验证gcc等工具是否已就位
-        ls -la ./staging_dir/host/bin/ | head -20
+        # 验证工具链
+        if [ -f "./staging_dir/host/bin/gcc" ]; then
+          echo "✓ 宿主工具链构建成功"
+        else
+          echo "✗ 宿主工具链构建失败"
+          exit 1
+        fi
 
-    # --- 新增步骤：在编译前进行空间清理（调整到工具链构建之后）---
-    - name: Cleanup space before firmware build
+    # 步骤 6: 清理空间（可选，空间不足时启用）
+    - name: Cleanup space if needed
       run: |
         cd openwrt
-        echo "=== 开始清理以释放磁盘空间 ==="
-        # 1. 清理已编译安装的主机工具链的构建缓存（保留安装好的工具）
-        rm -rf ./build_dir/host/*
-        # 2. 查看剩余空间
+        echo "=== 当前磁盘空间 ==="
         df -h
         
-    # 步骤 6: 开始编译固件（最耗时的步骤）
+        # 如果空间紧张，可以删除一些缓存
+        # 注意：这会延长后续编译时间，因为需要重新下载
+        AVAILABLE_SPACE=$(df . | tail -1 | awk '{print $4}')
+        if [ "$AVAILABLE_SPACE" -lt 10000000 ]; then  # 小于10GB
+          echo "磁盘空间不足，清理部分缓存..."
+          # 只清理构建缓存，保留下载的源码包
+          rm -rf ./build_dir/host/* ./build_dir/toolchain-*/*
+        else
+          echo "磁盘空间充足，跳过清理"
+        fi
+
+    # 步骤 7: 编译固件
     - name: Compile firmware
       run: |
         cd openwrt
-        # --- 新增：在编译前清理缓存并检查空间 ---
-        echo "=== 开始清理以释放磁盘空间 ==="
-        # 1. 清理已编译安装的主机工具链缓存（它们已安装，不再需要源码和中间文件）
-        rm -rf ./build_dir/host/* ./staging_dir/host/*
-        # 2. 可选：删除下载包缓存（如果再次编译会重新下载，但节省空间）
-        # rm -rf ./dl/*
-        # 3. 查看剩余空间
-        df -h
         echo "=== 开始编译固件 ==="
-        # --- 原有的编译命令 ---
-        make -j${{ env.MAKE_JOBS }} V=s
-        # --- 编译后可再次检查 ---
-        echo "=== 编译完成，最终空间状态 ==="
-        df -h
-        cd openwrt
-        # 开始编译。使用 V=sc 可以查看详细错误，首次编译请保留以便调试。
-        # 如果编译稳定，可以去掉 V=s 以减少日志量。
-        make -j${{ env.MAKE_JOBS }} V=s
+        # 使用 V=s 显示详细输出，便于调试
+        # 首次编译建议保留 V=s，稳定后可改为 V=sc 或去掉
+        make -j${{ env.MAKE_JOBS }} V=s 2>&1 | tee build.log
+        
+        # 检查编译结果
+        if [ -f "bin/targets/mediatek/mt7981/*.bin" ]; then
+          echo "✓ 固件编译成功"
+          ls -la bin/targets/mediatek/mt7981/*.bin
+        else
+          echo "✗ 固件编译失败"
+          # 检查错误日志
+          tail -100 build.log
+          exit 1
+        fi
 
-    # 步骤 7: 上传编译好的固件作为工件 (Artifact)
+    # 步骤 8: 上传固件
     - name: Upload firmware artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -158,5 +168,5 @@ jobs:
         path: |
           openwrt/bin/targets/**/*.bin
           openwrt/bin/targets/**/*.manifest
-        # 保留2天，GitHub 默认是90天，但免费用户空间有限
+          openwrt/build.log
         retention-days: 2
