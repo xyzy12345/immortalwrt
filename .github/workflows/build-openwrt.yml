@@ -37,10 +37,25 @@ jobs:
     # 2. 从本仓库复制你修改好的DTS文件到OpenWrt源码中
     - name: Copy Custom DTS File
       run: |
-        # 将你仓库里已有的DTS文件复制到OpenWrt源码的正确位置
-        # 假设你的DTS文件在仓库根目录的 `dts/` 文件夹下，请根据实际情况调整源路径
-        cp ./dts/${{ env.YOUR_DTS_BASENAME }}.dts ./openwrt_source/target/linux/mediatek/dts/
-        echo "DTS文件复制完成。"
+            # 2. 从本仓库复制你修改好的DTS和配置文件到OpenWrt源码中
+    - name: Copy Custom Device Files
+      run: |
+        echo "正在复制自定义设备文件..."
+        # 假设你的仓库就是当前工作流的默认检出目录
+        
+        # 2.1 复制DTS文件
+        # 源路径：你仓库中DTS文件的实际位置
+        # 目标路径：OpenWrt源码中的dts目录
+        cp ./target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts ./openwrt_source/target/linux/mediatek/dts/
+        echo "DTS文件复制完成：mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts"
+        
+        # 2.2 (可选但强烈推荐) 复制设备定义文件
+        # 如果之前修改过 mt7981.mk，也需要复制它，否则设备可能无法在menuconfig中出现
+        cp ./target/linux/mediatek/image/mt7981.mk ./openwrt_source/target/linux/mediatek/image/mt7981_custom.mk
+        echo "设备定义文件复制完成。"
+        
+        # 2.3 验证文件是否复制成功
+        ls -la ./openwrt_source/target/linux/mediatek/dts/*z8102ax*
 
     # 3. 安装编译依赖（基于OpenWrt官方要求）
     - name: Install Dependencies
