@@ -1,0 +1,125 @@
+name: Build ImmortalWrt
+
+# 控制工作流何时运行
+on:
+  # 允许在 GitHub 页面上手动触发
+  workflow_dispatch:
+    inputs:
+      target_device:
+        description: 'Target device profile (e.g., z8102ax-v2-emmc)'
+        required: true
+        default: 'z8102ax-v2-emmc'
+        type: string
+      # 你可以根据需要添加更多输入项，例如：
+      # build_packages:
+      #   description: 'Custom package list'
+      #   required: false
+      #   default: ''
+
+  # 你也可以启用推送代码时自动编译（首次测试建议先用手动触发）
+  # push:
+  #   branches: [ "main" ]
+  #   paths:
+  #     - 'target/linux/**'  # 仅当设备树或内核相关文件更改时触发
+  #     - '.github/workflows/**'
+
+# 全局环境变量，此处设置最常用和关键的配置
+env:
+  # ============ 【必须修改】 你的仓库信息 ============
+  # 修改为你的 ImmortalWrt fork 仓库地址
+  REPO_URL: "https://github.com/xyzy12345/immortalwrt"
+  # 修改为你的工作分支
+  REPO_BRANCH: "main"
+  # ============ 【必须修改】 你的目标设备 ============
+  # 修改为你在 mt7981.mk 文件中定义的设备标识符
+  DEFAULT_TARGET_DEVICE: "z8102ax-v2-emmc"
+  # ==============================================
+
+  # 高级选项（通常无需修改）
+  FEEDS_CONF: "feeds.conf.default"
+  # 设置编译线程数，GitHub 免费容器通常为2核
+  MAKE_JOBS: 2
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # GitHub 免费用户的编译时间限制是 6 小时，这个超时设置是安全的
+    timeout-minutes: 350
+
+    steps:
+    # 步骤 1: 检出你的 ImmortalWrt 源码
+    - name: Checkout ImmortalWrt source
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.repository }} # 默认为当前仓库，通常无需修改
+        ref: ${{ github.ref }}               # 默当前分支
+        path: openwrt                        # 将代码检出到 “openwrt” 子目录
+
+    # 步骤 2: 安装所有必需的编译依赖（这是 ImmortalWrt/OpenWrt 编译的关键）
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          clang \
+          gawk \
+          gcc-multilib \
+          flex \
+          git \
+          libncurses5-dev \
+          libssl-dev \
+          python3 \
+          python3-distutils \
+          rsync \
+          unzip \
+          zlib1g-dev \
+          file \
+          wget \
+          quilt
+
+    # 步骤 3: 进入目录并更新 feeds (软件包源)
+    - name: Update and install feeds
+      run: |
+        cd openwrt
+        # 更新所有 feeds
+        ./scripts/feeds update -a
+        # 安装所有 feeds 包
+        ./scripts/feeds install -a
+
+    # 步骤 4: 应用默认配置并选中你的设备
+    - name: Apply configuration for target device
+      run: |
+        cd openwrt
+        # 生成默认配置框架
+        make defconfig
+        # 核心步骤：将你的设备设置为编译目标
+        # 这行命令会确保在 .config 文件中选中 `CONFIG_TARGET_$DEVICE=y`
+        echo "CONFIG_TARGET_${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}=y" >> .config
+        # 运行 oldconfig 来处理依赖并确认其他选项
+        make oldconfig
+
+    # 步骤 5: 下载编译所需的工具链和软件包（耗时步骤）
+    - name: Download dependencies
+      run: |
+        cd openwrt
+        # 强制下载所有依赖，即使之前缓存过也重新检查
+        make -j${{ env.MAKE_JOBS }} download V=s
+
+    # 步骤 6: 开始编译固件（最耗时的步骤）
+    - name: Compile firmware
+      run: |
+        cd openwrt
+        # 开始编译。使用 V=sc 可以查看详细错误，首次编译请保留以便调试。
+        # 如果编译稳定，可以去掉 V=s 以减少日志量。
+        make -j${{ env.MAKE_JOBS }} V=s
+
+    # 步骤 7: 上传编译好的固件作为工件 (Artifact)
+    - name: Upload firmware artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ImmortalWrt-Firmware-${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}
+        path: |
+          openwrt/bin/targets/**/*.bin
+          openwrt/bin/targets/**/*.manifest
+        # 保留2天，GitHub 默认是90天，但免费用户空间有限
+        retention-days: 2
