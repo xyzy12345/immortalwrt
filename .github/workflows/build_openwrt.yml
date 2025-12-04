@@ -76,6 +76,8 @@ jobs:
           file \
           wget \
           quilt
+        # 新增以下关键包，用于解决32位工具链编译问题（如flock）
+        sudo apt-get install -y libc6-dev-i386 g++-multilib lib32stdc++6 lib32z1-dev
 
     # 步骤 3: 进入目录并更新 feeds (软件包源)
     - name: Update and install feeds
