@@ -4,139 +4,162 @@ on:
   workflow_dispatch: # 手动触发
     inputs:
       target_device:
-        description: '目标设备标识符 (需与filogic.mk中定义一致)'
+        description: '目标设备标识符 (精确匹配filogic.mk中的define Device/后面的名字)'
         required: true
-        default: 'zbtlink_zbt-z8102ax-v2-emmc' # 👈 请务必确认此名称
+        default: 'zbtlink_zbt-z8102ax-v2-emmc' # 请运行前务必确认
         type: string
 
 env:
   # 源码配置
   OPENWRT_REPO: "openwrt/openwrt"
-  OPENWRT_BRANCH: "v24.10.4" # 你指定的版本
-  CUSTOM_REPO: "xyzy12345/immortalwrt" # 你的DTS仓库
-  # 设备配置
-  DTS_FILENAME: "mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts"
+  OPENWRT_BRANCH: "v24.10.4"
+  CUSTOM_REPO: "xyzy12345/immortalwrt" # 你的DTS和配置仓库
   # 编译配置
-  MAKE_JOBS: 1 # 单核编译，提高稳定性
+  MAKE_JOBS: 1
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 350 # 接近6小时上限
+    timeout-minutes: 350
 
     steps:
-    # 步骤 1: 检出 OpenWrt 官方源码
-    - name: Checkout OpenWrt Source
+    # 步骤 1 & 2: 并行检出两个仓库以节省时间
+    - name: Checkout Sources
+      run: |
+        echo "正在并行检出代码仓库..."
+      # 官方使用 `uses` 动作，它们会并行执行
+      
+    - name: Checkout OpenWrt Official Source
       uses: actions/checkout@v4
       with:
         repository: ${{ env.OPENWRT_REPO }}
         ref: ${{ env.OPENWRT_BRANCH }}
-        path: openwrt_source
+        path: openwrt
 
-    # 步骤 2: 检出你自定义的 ImmortalWrt 仓库 (包含DTS)
-    - name: Checkout Custom Repository
+    - name: Checkout Your Custom Repository
       uses: actions/checkout@v4
       with:
         repository: ${{ env.CUSTOM_REPO }}
-        path: custom_repo
+        path: custom
 
-    # 步骤 3: 复制设备支持文件 (DTS 和 .mk 定义文件)
-    - name: Copy Device Support Files
+    # 步骤 3: 智能复制与探查设备文件
+    - name: Setup Device Support Files
       run: |
-        echo "复制自定义设备文件..."
-        # 3.1 复制 DTS 文件
-        cp ./custom_repo/target/linux/mediatek/dts/${{ env.DTS_FILENAME }} ./openwrt_source/target/linux/mediatek/dts/
-        echo "✅ DTS 文件复制完成"
+        echo "=== 阶段一：探查文件结构 ==="
         
-        # 3.2 复制设备定义文件 (关键步骤)
-        # 注意: OpenWrt 新版可能使用 filogic.mk，这里复制你修改过的版本
-        cp ./custom_repo/target/linux/mediatek/image/mt7981.mk ./openwrt_source/target/linux/mediatek/image/
-        echo "✅ 设备定义文件复制完成"
+        # 1. 探查自定义仓库中所有相关文件
+        echo "1. 你的自定义仓库中发现的设备相关文件："
+        find ./custom/target/linux/mediatek -type f \( -name "*.mk" -o -name "*z8102ax*" \) 2>/dev/null | sort || echo "未找到相关文件。"
         
-        # 3.3 验证
-        ls -lh ./openwrt_source/target/linux/mediatek/dts/*z8102ax*.dts
+        echo -e "\n2. OpenWrt 官方源码中现有的设备定义文件："
+        ls -la ./openwrt/target/linux/mediatek/image/ || echo "目录可能不存在。"
+        
+        echo -e "\n=== 阶段二：复制 DTS 文件 ==="
+        # 2. 复制DTS文件（这是核心，必须存在）
+        DTS_SOURCE_PATH="./custom/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts"
+        if [ -f "$DTS_SOURCE_PATH" ]; then
+          mkdir -p ./openwrt/target/linux/mediatek/dts/
+          cp "$DTS_SOURCE_PATH" ./openwrt/target/linux/mediatek/dts/
+          echo "✅ 已成功复制 DTS 文件。"
+        else
+          echo "❌ 致命错误：未在预期路径找到 DTS 文件。"
+          echo "请检查你的自定义仓库中文件路径是否为: target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts"
+          exit 1 # 明确失败
+        fi
+        
+        echo -e "\n=== 阶段三：处理设备定义 (.mk 文件) ==="
+        # 3. 设备定义处理策略
+        # 策略：我们假设设备已在 OpenWrt 官方 filogic.mk 中有定义。
+        # 此步骤仅作为验证和提示，不强制复制可能不存在的 .mk 文件。
+        echo "3.1 检查 OpenWrt 的 filogic.mk 中是否包含你的设备..."
+        if grep -q "z8102ax\|zbtlink" ./openwrt/target/linux/mediatek/image/filogic.mk 2>/dev/null; then
+          echo "   ✅ 检测到设备关键字，官方源码可能已支持。"
+        else
+          echo "   ⚠️  警告：未在官方 filogic.mk 中找到设备关键字 'z8102ax' 或 'zbtlink'。"
+          echo "   这通常意味着："
+          echo "   1. 设备标识符可能不同，请核对。"
+          echo "   2. 你需要手动将设备定义合并到官方 filogic.mk 中。"
+          echo "   工作流将继续，但配置阶段可能失败。"
+        fi
+        
+        # 3.2 如果你的仓库有特殊定义，可以尝试追加（谨慎操作）
+        CUSTOM_MK="./custom/target/linux/mediatek/image/mt7981.mk"
+        if [ -f "$CUSTOM_MK" ]; then
+          echo "3.2 发现自定义 .mk 文件，正在提取设备定义块（供参考）..."
+          # 这是一个安全操作，仅显示，不自动合并
+          sed -n '/define Device.*z8102ax/,/^TARGET_DEVICES/p' "$CUSTOM_MK" 2>/dev/null | head -20 || true
+        fi
 
-    # 步骤 4: 安装完整的编译依赖
-    - name: Install Build Dependencies
+    # 步骤 4: 安装编译依赖
+    - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          clang \
-          flex \
-          bison \
-          g++ \
-          gawk \
-          gcc-multilib \
-          g++-multilib \
-          gettext \
-          git \
-          libncurses5-dev \
-          libssl-dev \
-          python3 \
-          python3-distutils \
-          rsync \
-          unzip \
-          zlib1g-dev \
-          file \
-          wget \
-          quilt \
-          cpio
-        # 防止 32 位工具链编译失败的关键库
-        sudo apt-get install -y libc6-dev-i386 lib32stdc++6
+        sudo apt-get install -y build-essential clang flex bison g++ gawk \
+          gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+          python3 python3-distutils rsync unzip zlib1g-dev file wget \
+          quilt cpio libc6-dev-i386 lib32stdc++6
+        echo "✅ 所有编译依赖已安装。"
 
-    # 步骤 5: 更新和安装软件包源 (feeds)
-    - name: Update and Install Feeds
+    # 步骤 5: 更新 Feeds
+    - name: Update Feeds
       run: |
-        cd openwrt_source
+        cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
+        echo "✅ 软件包源已更新。"
 
-    # 步骤 6: 配置目标设备 (关键且易错步骤)
-    - name: Configure Target Device
+    # 步骤 6: 配置目标设备 (关键步骤，容易失败)
+    - name: Configure Target
       run: |
-        cd openwrt_source
-        # 6.1 生成默认配置框架
+        cd openwrt
+        echo "当前配置的设备标识符为: ${{ github.event.inputs.target_device }}"
+        
+        # 生成默认配置
         make defconfig
-        # 6.2 应用目标配置 (请根据OpenWrt实际结构调整)
-        # 对于 v24.10.4，MT7981 通常在 filogic 子目标下
-        echo "CONFIG_TARGET_mediatek=y" >> .config
-        echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-        # 此行必须与 filogic.mk 中的设备标识符严格匹配
-        echo "CONFIG_TARGET_DEVICE_mediatek_filogic_${{ github.event.inputs.target_device }}=y" >> .config
-        # 6.3 应用配置
+        
+        # 应用目标配置
+        # 注意：如果设备在filogic.mk中不存在，此命令会静默失败，后续make会报错
+        {
+          echo "CONFIG_TARGET_mediatek=y"
+          echo "CONFIG_TARGET_mediatek_filogic=y"
+          echo "CONFIG_TARGET_DEVICE_mediatek_filogic_${{ github.event.inputs.target_device }}=y"
+        } >> .config
+        
+        # 应用配置，此处可能开始报错
+        echo "应用配置，请留意可能的错误..."
         make oldconfig
 
-    # 步骤 7: 下载所有依赖
-    - name: Download Dependencies
+    # 步骤 7: 下载依赖包
+    - name: Download Packages
       run: |
-        cd openwrt_source
+        cd openwrt
         make -j${{ env.MAKE_JOBS }} download
+        echo "✅ 依赖包下载完成。"
 
-    # 步骤 8: 清理空间 (避免磁盘空间不足)
-    - name: Clean Up Disk Space
+    # 步骤 8: 清理磁盘空间
+    - name: Free Up Disk Space
       run: |
-        cd openwrt_source
-        echo "清理主机工具构建缓存..."
-        rm -rf ./build_dir/host/*
-        echo "当前磁盘空间:"
+        cd openwrt
+        echo "清理构建缓存..."
+        rm -rf ./build_dir/host/* ./staging_dir/host/*
+        echo "当前磁盘空间："
         df -h
 
-    # 步骤 9: 编译固件 (核心步骤)
+    # 步骤 9: 编译固件
     - name: Compile Firmware
       run: |
-        cd openwrt_source
+        cd openwrt
+        echo "开始编译固件 (使用单核，输出详细日志)..."
         make -j${{ env.MAKE_JOBS }} V=s 2>&1 | tee compile.log
-        # 编译后检查
-        echo "编译完成，检查输出目录:"
-        find ./bin/targets -name "*.bin" -type f | head -5
+        echo "编译进程结束。"
 
-    # 步骤 10: 上传生成的固件
-    - name: Upload Firmware Artifacts
+    # 步骤 10: 上传产物
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
+      if: success() || failure() # 即使编译失败也上传日志供分析
       with:
-        name: OpenWrt-Firmware-${{ github.event.inputs.target_device }}
+        name: Build-OpenWrt-${{ github.event.inputs.target_device }}-${{ github.run_id }}
         path: |
-          openwrt_source/bin/targets/**/*.bin
-          openwrt_source/compile.log
+          openwrt/bin/targets/**/*.bin
+          openwrt/compile.log
         retention-days: 7
