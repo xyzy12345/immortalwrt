@@ -1,107 +1,142 @@
 name: Build OpenWrt for Z8102AX-V2
 
 on:
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch: # 手动触发
     inputs:
       target_device:
-        description: 'Target device profile'
+        description: '目标设备标识符 (需与filogic.mk中定义一致)'
         required: true
-        default: 'ZBT-Z8102AX-V2-emmc' # 👉 请确认此标识符在OpenWrt中存在
+        default: 'zbtlink_zbt-z8102ax-v2-emmc' # 👈 请务必确认此名称
         type: string
 
 env:
-  REPO_URL: "https://github.com/openwrt/openwrt"
-  REPO_BRANCH: "v24.10.4" # 你已修改为24.10.4
-  YOUR_DTS_BASENAME: "mt7981b-zbtlink-zbt-z8102ax-v2-emmc"
-  # ⚠️ 重要：确认OpenWrt中使用的标识符
-  DEFAULT_TARGET_DEVICE: "zbtlink_zbt-z8102ax-v2-emmc"
-  MAKE_JOBS: 1
+  # 源码配置
+  OPENWRT_REPO: "openwrt/openwrt"
+  OPENWRT_BRANCH: "v24.10.4" # 你指定的版本
+  CUSTOM_REPO: "xyzy12345/immortalwrt" # 你的DTS仓库
+  # 设备配置
+  DTS_FILENAME: "mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts"
+  # 编译配置
+  MAKE_JOBS: 1 # 单核编译，提高稳定性
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 350
+    timeout-minutes: 350 # 接近6小时上限
 
     steps:
-    # 1. 检出官方 OpenWrt 源码
+    # 步骤 1: 检出 OpenWrt 官方源码
     - name: Checkout OpenWrt Source
       uses: actions/checkout@v4
       with:
-        repository: openwrt/openwrt
-        ref: ${{ env.REPO_BRANCH }}
+        repository: ${{ env.OPENWRT_REPO }}
+        ref: ${{ env.OPENWRT_BRANCH }}
         path: openwrt_source
 
-    # 2. 复制自定义设备文件 (关键步骤)
-    - name: Copy Custom Device Files
-      run: |
-        echo "正在复制自定义设备文件..."
-        
-        # 2.1 复制DTS文件
-        cp ./target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts ./openwrt_source/target/linux/mediatek/dts/
-        echo "DTS文件复制完成"
-        
-        # 2.2 (关键) 复制设备定义文件
-        # OpenWrt v24.10.4 中，MT7981设备的定义可能在 `filogic.mk` 而不是 `mt7981.mk`
-        # 请根据OpenWrt源码的实际结构调整目标路径和文件名
-        cp ./target/linux/mediatek/image/mt7981.mk ./openwrt_source/target/linux/mediatek/image/
-        echo "设备定义文件复制完成"
-        
-        # 2.3 验证
-        ls -la ./openwrt_source/target/linux/mediatek/dts/*z8102ax*
-        ls -la ./openwrt_source/target/linux/mediatek/image/
+    # 步骤 2: 检出你自定义的 ImmortalWrt 仓库 (包含DTS)
+    - name: Checkout Custom Repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.CUSTOM_REPO }}
+        path: custom_repo
 
-    # 3. 安装编译依赖
-    - name: Install Dependencies
+    # 步骤 3: 复制设备支持文件 (DTS 和 .mk 定义文件)
+    - name: Copy Device Support Files
+      run: |
+        echo "复制自定义设备文件..."
+        # 3.1 复制 DTS 文件
+        cp ./custom_repo/target/linux/mediatek/dts/${{ env.DTS_FILENAME }} ./openwrt_source/target/linux/mediatek/dts/
+        echo "✅ DTS 文件复制完成"
+        
+        # 3.2 复制设备定义文件 (关键步骤)
+        # 注意: OpenWrt 新版可能使用 filogic.mk，这里复制你修改过的版本
+        cp ./custom_repo/target/linux/mediatek/image/mt7981.mk ./openwrt_source/target/linux/mediatek/image/
+        echo "✅ 设备定义文件复制完成"
+        
+        # 3.3 验证
+        ls -lh ./openwrt_source/target/linux/mediatek/dts/*z8102ax*.dts
+
+    # 步骤 4: 安装完整的编译依赖
+    - name: Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-distutils rsync unzip zlib1g-dev file wget
-        sudo apt-get install -y libc6-dev-i386
+        sudo apt-get install -y \
+          build-essential \
+          clang \
+          flex \
+          bison \
+          g++ \
+          gawk \
+          gcc-multilib \
+          g++-multilib \
+          gettext \
+          git \
+          libncurses5-dev \
+          libssl-dev \
+          python3 \
+          python3-distutils \
+          rsync \
+          unzip \
+          zlib1g-dev \
+          file \
+          wget \
+          quilt \
+          cpio
+        # 防止 32 位工具链编译失败的关键库
+        sudo apt-get install -y libc6-dev-i386 lib32stdc++6
 
-    # 4. 进入目录，更新feeds
-    - name: Update Feeds
+    # 步骤 5: 更新和安装软件包源 (feeds)
+    - name: Update and Install Feeds
       run: |
         cd openwrt_source
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # 5. 应用配置
-    - name: Configure for Target Device
+    # 步骤 6: 配置目标设备 (关键且易错步骤)
+    - name: Configure Target Device
       run: |
         cd openwrt_source
+        # 6.1 生成默认配置框架
         make defconfig
-        # 配置命令需与OpenWrt的Kconfig语法匹配
-        # 如果设备标识符不确定，可以先尝试不指定，在后续步骤中通过menuconfig选择
+        # 6.2 应用目标配置 (请根据OpenWrt实际结构调整)
+        # 对于 v24.10.4，MT7981 通常在 filogic 子目标下
         echo "CONFIG_TARGET_mediatek=y" >> .config
         echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-        # 以下这行是关键，如果设备标识符错误会导致编译找不到目标
-        echo "CONFIG_TARGET_DEVICE_mediatek_filogic_${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}=y" >> .config
+        # 此行必须与 filogic.mk 中的设备标识符严格匹配
+        echo "CONFIG_TARGET_DEVICE_mediatek_filogic_${{ github.event.inputs.target_device }}=y" >> .config
+        # 6.3 应用配置
         make oldconfig
 
-    # 6. 下载依赖
+    # 步骤 7: 下载所有依赖
     - name: Download Dependencies
       run: |
         cd openwrt_source
         make -j${{ env.MAKE_JOBS }} download
 
-    # 7. 清理空间
-    - name: Cleanup Space Before Build
+    # 步骤 8: 清理空间 (避免磁盘空间不足)
+    - name: Clean Up Disk Space
       run: |
         cd openwrt_source
-        echo "清理编译缓存..."
-        rm -rf ./build_dir/host/* ./staging_dir/host/*
+        echo "清理主机工具构建缓存..."
+        rm -rf ./build_dir/host/*
+        echo "当前磁盘空间:"
         df -h
 
-    # 8. 编译固件
+    # 步骤 9: 编译固件 (核心步骤)
     - name: Compile Firmware
       run: |
         cd openwrt_source
-        make -j${{ env.MAKE_JOBS }} V=s
+        make -j${{ env.MAKE_JOBS }} V=s 2>&1 | tee compile.log
+        # 编译后检查
+        echo "编译完成，检查输出目录:"
+        find ./bin/targets -name "*.bin" -type f | head -5
 
-    # 9. 上传固件
+    # 步骤 10: 上传生成的固件
     - name: Upload Firmware Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: OpenWrt-Firmware-${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}
+        name: OpenWrt-Firmware-${{ github.event.inputs.target_device }}
         path: |
           openwrt_source/bin/targets/**/*.bin
-        retention-days: 3
+          openwrt_source/compile.log
+        retention-days: 7
