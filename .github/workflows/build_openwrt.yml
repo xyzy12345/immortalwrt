@@ -106,7 +106,27 @@ jobs:
         cd openwrt
         # 强制下载所有依赖，即使之前缓存过也重新检查
         make -j${{ env.MAKE_JOBS }} download V=s
+    # --- 新增步骤：优先构建并安装宿主工具链 ---
+    - name: Build and install host tools
+      run: |
+        cd openwrt
+        echo "=== 开始构建宿主工具链（这是解决flock错误的关键）==="
+        # 这步会构建并安装gcc等所有host工具到 staging_dir/host/
+        make -j${{ env.MAKE_JOBS }} tools/install V=s
+        echo "=== 宿主工具链构建完成 ==="
+        # 验证gcc等工具是否已就位
+        ls -la ./staging_dir/host/bin/ | head -20
 
+    # --- 新增步骤：在编译前进行空间清理（调整到工具链构建之后）---
+    - name: Cleanup space before firmware build
+      run: |
+        cd openwrt
+        echo "=== 开始清理以释放磁盘空间 ==="
+        # 1. 清理已编译安装的主机工具链的构建缓存（保留安装好的工具）
+        rm -rf ./build_dir/host/*
+        # 2. 查看剩余空间
+        df -h
+        
     # 步骤 6: 开始编译固件（最耗时的步骤）
     - name: Compile firmware
       run: |
