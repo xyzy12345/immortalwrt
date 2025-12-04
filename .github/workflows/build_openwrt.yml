@@ -106,8 +106,23 @@ jobs:
         make -j${{ env.MAKE_JOBS }} download V=s
 
     # 步骤 6: 开始编译固件（最耗时的步骤）
-    - name: Compile firmware
-      run: |
+    -  name: Compile firmware
+  run: |
+    cd openwrt
+    # --- 新增：在编译前清理缓存并检查空间 ---
+    echo "=== 开始清理以释放磁盘空间 ==="
+    # 1. 清理已编译安装的主机工具链缓存（它们已安装，不再需要源码和中间文件）
+    rm -rf ./build_dir/host/* ./staging_dir/host/*
+    # 2. 可选：删除下载包缓存（如果再次编译会重新下载，但节省空间）
+    # rm -rf ./dl/*
+    # 3. 查看剩余空间
+    df -h
+    echo "=== 开始编译固件 ==="
+    # --- 原有的编译命令 ---
+    make -j${{ env.MAKE_JOBS }} V=s
+    # --- 编译后可再次检查 ---
+    echo "=== 编译完成，最终空间状态 ==="
+    df -h
         cd openwrt
         # 开始编译。使用 V=sc 可以查看详细错误，首次编译请保留以便调试。
         # 如果编译稳定，可以去掉 V=s 以减少日志量。
