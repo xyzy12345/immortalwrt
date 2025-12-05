@@ -1,172 +1,460 @@
-name: Build ImmortalWrt
+name: Build OpenWrt for ZBT-Z8102AX V2 (eMMC Base)
 
-# 控制工作流何时运行
 on:
-  # 允许在 GitHub 页面上手动触发
   workflow_dispatch:
-    inputs:
-      target_device:
-        description: 'Target device profile (e.g., z8102ax-v2-emmc)'
-        required: true
-        default: 'z8102ax-v2-emmc'
-        type: string
-
-  # 你也可以启用推送代码时自动编译
-  # push:
-  #   branches: [ "main" ]
-  #   paths:
-  #     - 'target/linux/**'
-  #     - '.github/workflows/**'
-
-# 全局环境变量
-env:
-  # ============ 【必须修改】 你的仓库信息 ============
-  REPO_URL: "https://github.com/xyzy12345/immortalwrt"
-  REPO_BRANCH: "main"
-  # ============ 【必须修改】 你的目标设备 ============
-  DEFAULT_TARGET_DEVICE: "z8102ax-v2-emmc"
-  # ==============================================
-
-  # 高级选项
-  FEEDS_CONF: "feeds.conf.default"
-  # 设置编译线程数
-  MAKE_JOBS: 2
+  push:
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 350
+    timeout-minutes: 180
 
     steps:
-    # 步骤 1: 检出源码
-    - name: Checkout ImmortalWrt source
+    - name: 1. Checkout OpenWrt source
       uses: actions/checkout@v4
       with:
-        repository: ${{ github.repository }}
-        ref: ${{ github.ref }}
-        path: openwrt
+        repository: openwrt/openwrt
+        ref: v24.10.4
 
-    # 步骤 2: 安装编译依赖
-    - name: Install build dependencies
+    - name: 2. [CORE] Create eMMC DTS file for V2
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          clang \
-          gawk \
-          gcc-multilib \
-          flex \
-          git \
-          libncurses5-dev \
-          libssl-dev \
-          python3 \
-          python3-distutils \
-          rsync \
-          unzip \
-          zlib1g-dev \
-          file \
-          wget \
-          quilt
-        # 用于解决32位工具链编译问题
-        sudo apt-get install -y libc6-dev-i386 g++-multilib lib32stdc++6 lib32z1-dev
+        cd ${{ github.workspace }}
+        echo "=== 创建 V2 eMMC 版 DTS 文件 ==="
+        DTS_DIR="target/linux/mediatek/dts"
+        mkdir -p "$DTS_DIR"
+        EMMC_DTS="$DTS_DIR/mt7981b-zbtlink-zbt-z8102ax-v2-emmc.dts"
+        cat > "$EMMC_DTS" << 'DTS_CONTENT'
+        // SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 
-    # 步骤 3: 更新和安装 feeds
-    - name: Update and install feeds
+        /dts-v1/;
+        #include <dt-bindings/gpio/gpio.h>
+        #include <dt-bindings/input/input.h>
+        #include <dt-bindings/pinctrl/mt65xx.h>
+
+        #include "mt7981b.dtsi"
+
+        / {
+        	model = "ZBT Z8102AX V2 (EMMC)";
+        	compatible = "zbtlink,zbt-z8102ax-v2-emmc", "mediatek,mt7981";
+
+        	aliases {
+        		serial0 = &uart0;
+        		led-boot = &led_status_red;
+        		led-failsafe = &led_status_red;
+        		led-running = &led_status_green;
+        		led-upgrade = &led_status_green;
+        		label-mac-device = &gmac0;
+        	};
+
+        	chosen {
+        		stdout-path = "serial0:115200n8";
+        		bootargs = "earlycon=uart8250,mmio32,0x11002000 console=ttyS0,115200n8 root=/dev/mmcblk0p6 rootwait";
+        	};
+
+        	gpio-keys {
+        		compatible = "gpio-keys";
+
+        		reset {
+        			label = "reset";
+        			linux,code = <KEY_RESTART>;
+        			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+        		};
+
+        		wps {
+        			label = "wps";
+        			linux,code = <KEY_WPS_BUTTON>;
+        			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+        		};
+        	};
+
+        	leds {
+        		compatible = "gpio-leds";
+
+        		led_status_red: red {
+        			gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
+        			color = <LED_COLOR_ID_RED>;
+        			function = LED_FUNCTION_STATUS;
+        		};
+
+        		led_status_green: green {
+        			gpios = <&pio 10 GPIO_ACTIVE_LOW>;
+        			color = <LED_COLOR_ID_GREEN>;
+        			function = LED_FUNCTION_STATUS;
+        		};
+
+        		led_status_blue: blue {
+        			gpios = <&pio 11 GPIO_ACTIVE_LOW>;
+        			color = <LED_COLOR_ID_BLUE>;
+        			function = LED_FUNCTION_STATUS;
+        		};
+
+        		led_status_5g1: 5g1 {
+        			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
+        			color = <LED_COLOR_ID_BLUE>;
+        			function = LED_FUNCTION_USB;
+        			function-enumerator = <0>;
+        		};
+
+        		led_status_5g2: 5g2 {
+        			gpios = <&pio 13 GPIO_ACTIVE_LOW>;
+        			color = <LED_COLOR_ID_BLUE>;
+        			function = LED_FUNCTION_USB;
+        			function-enumerator = <1>;
+        		};
+        	};
+
+        	watchdog {
+        		compatible = "linux,wdt-gpio";
+        		gpios = <&pio 2 GPIO_ACTIVE_HIGH>;
+        		hw_algo = "toggle";
+        		hw_margin_ms = <1000>;
+        	};
+
+        	gpio-export {
+        		compatible = "gpio-export";
+        		#size-cells = <0>;
+
+        		pcie {
+        			gpio-export,name = "pcie_power";
+        			gpio-export,output = <1>;
+        			gpios = <&pio 3 GPIO_ACTIVE_HIGH>;
+        		};
+
+        		5g1 {
+        			gpio-export,name = "5g1";
+        			gpio-export,output = <1>;
+        			gpios = <&pio 4 GPIO_ACTIVE_HIGH>;
+        		};
+
+        		5g2 {
+        			gpio-export,name = "5g2";
+        			gpio-export,output = <1>;
+        			gpios = <&pio 5 GPIO_ACTIVE_HIGH>;
+        		};
+
+        		sim1 {
+        			gpio-export,name = "sim1";
+        			gpio-export,output = <0>;
+        			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
+        		};
+
+        		sim2 {
+        			gpio-export,name = "sim2";
+        			gpio-export,output = <0>;
+        			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
+        		};
+        	};
+
+        	regulator-3p3v {
+        		regulator-max-microvolt = <3300000>;
+        		regulator-min-microvolt = <3300000>;
+        		regulator-name = "fixed-3.3V";
+        		compatible = "regulator-fixed";
+        		regulator-always-on;
+        	};
+        };
+
+        &eth {
+        	status = "okay";
+
+        	gmac0: mac@0 {
+        		compatible = "mediatek,eth-mac";
+        		reg = <0>;
+        		phy-mode = "2500base-x";
+        		nvmem-cell-names = "mac-address";
+
+        		fixed-link {
+        			speed = <2500>;
+        			full-duplex;
+        			pause;
+        		};
+        	};
+
+        	gmac1: mac@1 {
+        		compatible = "mediatek,eth-mac";
+        		reg = <1>;
+        		phy-mode = "gmii";
+        		phy-handle = <&int_gbe_phy>;
+        		nvmem-cell-names = "mac-address";
+        		nvmem-cells = <&macaddr_factory_02a>;
+        	};
+        };
+
+        &mdio_bus {
+        	switch: switch@1f {
+        		compatible = "mediatek,mt7531";
+        		reg = <31>;
+        		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+        		interrupt-controller;
+        		#interrupt-cells = <1>;
+        		interrupt-parent = <&pio>;
+        		interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
+        	};
+        };
+
+        &mmc0 {
+        	pinctrl-names = "default", "state_uhs";
+        	pinctrl-0 = <&mmc0_pins_default>;
+        	pinctrl-1 = <&mmc0_pins_uhs>;
+        	bus-width = <8>;
+        	max-frequency = <52000000>;
+        	cap-mmc-highspeed;
+        	mmc-hs200-1_8v;
+        	vmmc-supply = <&regulator-3p3v>;
+        	non-removable;
+        	status = "okay";
+
+        	partitions {
+        		compatible = "fixed-partitions";
+        		#address-cells = <1>;
+        		#size-cells = <1>;
+
+        		partition@0 {
+        			label = "BL2";
+        			reg = <0x00000 0x100000>;
+        			read-only;
+        		};
+
+        		partition@100000 {
+        			label = "u-boot-env";
+        			reg = <0x100000 0x80000>;
+        		};
+
+        		factory: partition@180000 {
+        			label = "Factory";
+        			reg = <0x180000 0x200000>;
+        			read-only;
+        		};
+
+        		partition@380000 {
+        			label = "FIP";
+        			reg = <0x380000 0x200000>;
+        			read-only;
+        		};
+
+        		partition@580000 {
+        			label = "rootfs";
+        			reg = <0x580000 0x7280000>;
+        		};
+        	};
+        };
+
+        &switch {
+        	ports {
+        		#address-cells = <1>;
+        		#size-cells = <0>;
+
+        		port@0 {
+        			reg = <0>;
+        			label = "lan1";
+        			nvmem-cell-names = "mac-address";
+        			nvmem-cells = <&macaddr_factory_004>;
+        		};
+
+        		port@1 {
+        			reg = <1>;
+        			label = "lan2";
+        			nvmem-cell-names = "mac-address";
+        			nvmem-cells = <&macaddr_factory_004>;
+        		};
+
+        		port@2 {
+        			reg = <2>;
+        			label = "lan3";
+        			nvmem-cell-names = "mac-address";
+        			nvmem-cells = <&macaddr_factory_004>;
+        		};
+
+        		port@3 {
+        			reg = <3>;
+        			label = "lan4";
+        			nvmem-cell-names = "mac-address";
+        			nvmem-cells = <&macaddr_factory_004>;
+        		};
+
+        		port@6 {
+        			reg = <6>;
+        			label = "cpu";
+        			ethernet = <&gmac0>;
+        			phy-mode = "2500base-x";
+
+        			fixed-link {
+        				speed = <2500>;
+        				full-duplex;
+        				pause;
+        			};
+        		};
+        	};
+        };
+
+        &pio {
+        	gpio-line-names =
+        			"wps",
+        			"reset",
+        			"watchdog",
+        			"pcie",
+        			"5g1",
+        			"5g2",
+        			"sim1",
+        			"sim2",
+        			"5g1_status",
+        			"red_status",
+        			"green_status",
+        			"blue_status",
+        			"",
+        			"5g2_status";
+
+        	mmc0_pins_default: mmc0-pins-default {
+        		mux {
+        			function = "flash";
+        			groups = "emmc_45";
+        		};
+        	};
+
+        	mmc0_pins_uhs: mmc0-pins-uhs {
+        		mux {
+        			function = "flash";
+        			groups = "emmc_45";
+        		};
+        	};
+        };
+
+        &uart0 {
+        	status = "okay";
+        };
+
+        &watchdog {
+        	status = "okay";
+        };
+
+        &usb_phy {
+        	status = "okay";
+        };
+
+        &xhci {
+        	status = "okay";
+        };
+
+        &wifi {
+        	status = "okay";
+        	nvmem-cells = <&eeprom_factory>;
+        	nvmem-cell-names = "eeprom";
+        };
+
+        &factory {
+        	compatible = "nvmem-cells";
+        	#address-cells = <1>;
+        	#size-cells = <1>;
+
+        	macaddr_factory_004: macaddr@4 {
+        		reg = <0x4 0x6>;
+        	};
+        	
+        	macaddr_factory_02a: macaddr@2a {
+        		reg = <0x2a 0x6>;
+        	};
+        	
+        	eeprom_factory: eeprom@0 {
+        		reg = <0x0 0x1000>;
+        	};
+        };
+        DTS_CONTENT
+
+        echo "✅ V2 eMMC DTS文件已创建: $EMMC_DTS"
+        echo "=== 验证DTS文件 ==="
+        head -20 "$EMMC_DTS"
+        echo "..."
+        tail -20 "$EMMC_DTS"
+
+    - name: 3. [CORE] Patch device configuration in filogic.mk for V2 eMMC
       run: |
-        cd openwrt
+        cd ${{ github.workspace }}
+        echo "=== 修改 filogic.mk 添加V2 eMMC设备定义 ==="
+        FILE_PATH="target/linux/mediatek/image/filogic.mk"
+        if [ ! -f "$FILE_PATH" ]; then
+          echo "❌ 未找到 filogic.mk 文件"
+          exit 1
+        fi
+        echo "✅ 找到配置文件: $FILE_PATH"
+        cp "$FILE_PATH" "${FILE_PATH}.backup"
+        if grep -q "define Device/zbtlink_zbt-z8102ax-v2-emmc" "$FILE_PATH"; then
+          echo "⚠️  V2 eMMC设备定义已存在，将更新"
+          sed -i '/define Device\/zbtlink_zbt-z8102ax-v2-emmc/,/^endef/ {
+            /DEVICE_DTS/d
+            /^endef/i \  DEVICE_DTS := mt7981b-zbtlink-zbt-z8102ax-v2-emmc
+            /SUPPORTED_DEVICES/d
+            /^endef/i \  SUPPORTED_DEVICES := zbtlink,zbt-z8102ax-v2-emmc
+          }' "$FILE_PATH"
+        else
+          echo "=== 创建新的V2 eMMC设备定义 ==="
+          cat >> "$FILE_PATH" << 'V2_EMMC_DEFINE'
+
+        define Device/zbtlink_zbt-z8102ax-v2-emmc
+          DEVICE_VENDOR := Zbtlink
+          DEVICE_MODEL := ZBT-Z8102AX V2 (EMMC)
+          DEVICE_DTS := mt7981b-zbtlink-zbt-z8102ax-v2-emmc
+          DEVICE_DTS_DIR := ../dts
+          SUPPORTED_DEVICES := zbtlink,zbt-z8102ax-v2-emmc
+          DEVICE_PACKAGES := kmod-mmc kmod-fs-f2fs
+          IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+        endef
+        TARGET_DEVICES += zbtlink_zbt-z8102ax-v2-emmc
+        V2_EMMC_DEFINE
+        fi
+        echo "✅ V2 eMMC设备定义已添加到 filogic.mk"
+        echo "=== 验证修改 ==="
+        grep -A 10 "define Device/zbtlink_zbt-z8102ax-v2-emmc" "$FILE_PATH"
+
+    - name: 4. Update and install feeds
+      run: |
+        cd ${{ github.workspace }}
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # 步骤 4: 应用设备配置
-    - name: Apply configuration for target device
+    - name: 5. Apply V2 eMMC configuration
       run: |
-        cd openwrt
-        # 获取目标设备名称（手动输入或使用默认值）
-        TARGET_DEVICE="${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}"
-        
-        # 方法1: 使用 defconfig 并设置配置
+        cd ${{ github.workspace }}
         make defconfig
-        
-        # 对于 mt7981 设备，通常需要设置这两个配置
-        echo "CONFIG_TARGET_mediatek=y" >> .config
-        echo "CONFIG_TARGET_mediatek_mt7981=y" >> .config
-        
-        # 根据具体设备设置profile（需要查看你的设备定义）
-        # 假设你的设备在 target/linux/mediatek/mt7981/base-files/etc/board.d/01_leds
-        # 通常格式是 CONFIG_TARGET_DEVICE_mediatek_mt7981_DEVICE_$DEVICE=y
-        echo "CONFIG_TARGET_DEVICE_mediatek_mt7981_DEVICE_$TARGET_DEVICE=y" >> .config
-        
-        # 运行 oldconfig 处理依赖
-        make oldconfig
-        
-        # 显示配置摘要
-        echo "=== 当前配置摘要 ==="
-        grep "CONFIG_TARGET\|CONFIG_DEVICE" .config | head -20
+        rm -f .config
+        echo "CONFIG_TARGET_mediatek=y" > .config
+        echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
+        echo "CONFIG_TARGET_mediatek_filogic_DEVICE_zbtlink_zbt-z8102ax-v2-emmc=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-mmc=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-fs-f2fs=y" >> .config
+        echo "CONFIG_MMC_BLOCK=y" >> .config
+        echo "CONFIG_MMC_MTK=y" >> .config
+        echo "CONFIG_MMC_MTK_SDIO=y" >> .config
+        echo "CONFIG_MMC_HS200=y" >> .config
+        echo "CONFIG_PACKAGE_luci=y" >> .config
+        echo "CONFIG_PACKAGE_luci-proto-ppp=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-opkg=y" >> .config
+        echo "CONFIG_PACKAGE_dnsmasq=y" >> .config
+        echo "CONFIG_PACKAGE_firewall4=y" >> .config
+        echo "CONFIG_PACKAGE_opkg=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-core=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb3=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-storage=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-net=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-pcie=y" >> .config
+        make defconfig
 
-    # 步骤 5: 下载依赖和工具链
-    - name: Download dependencies and build tools
+    - name: 6. Download packages
       run: |
-        cd openwrt
-        echo "=== 开始下载依赖 ==="
-        make -j${{ env.MAKE_JOBS }} download V=s
-        
-        echo "=== 开始构建宿主工具链 ==="
-        make -j${{ env.MAKE_JOBS }} tools/install V=s
-        
-        echo "=== 宿主工具链构建完成 ==="
-        # 验证工具链
-        if [ -f "./staging_dir/host/bin/gcc" ]; then
-          echo "✓ 宿主工具链构建成功"
-        else
-          echo "✗ 宿主工具链构建失败"
-          exit 1
-        fi
+        cd ${{ github.workspace }}
+        make download -j$(nproc)
+      timeout-minutes: 60
 
-    # 步骤 6: 清理空间（可选，空间不足时启用）
-    - name: Cleanup space if needed
+    - name: 7. Build firmware
       run: |
-        cd openwrt
-        echo "=== 当前磁盘空间 ==="
-        df -h
-        
-        # 如果空间紧张，可以删除一些缓存
-        # 注意：这会延长后续编译时间，因为需要重新下载
-        AVAILABLE_SPACE=$(df . | tail -1 | awk '{print $4}')
-        if [ "$AVAILABLE_SPACE" -lt 10000000 ]; then  # 小于10GB
-          echo "磁盘空间不足，清理部分缓存..."
-          # 只清理构建缓存，保留下载的源码包
-          rm -rf ./build_dir/host/* ./build_dir/toolchain-*/*
-        else
-          echo "磁盘空间充足，跳过清理"
-        fi
+        cd ${{ github.workspace }}
+        make -j$(nproc) V=s
+      timeout-minutes: 120
 
-    # 步骤 7: 编译固件
-    - name: Compile firmware
-      run: |
-        cd openwrt
-        echo "=== 开始编译固件 ==="
-        # 使用 V=s 显示详细输出，便于调试
-        # 首次编译建议保留 V=s，稳定后可改为 V=sc 或去掉
-        make -j${{ env.MAKE_JOBS }} V=s 2>&1 | tee build.log
-        
-        # 检查编译结果
-        if [ -f "bin/targets/mediatek/mt7981/*.bin" ]; then
-          echo "✓ 固件编译成功"
-          ls -la bin/targets/mediatek/mt7981/*.bin
-        else
-          echo "✗ 固件编译失败"
-          # 检查错误日志
-          tail -100 build.log
-          exit 1
-        fi
-
-    # 步骤 8: 上传固件
-    - name: Upload firmware artifacts
+    - name: 8. Upload firmware artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ImmortalWrt-Firmware-${{ github.event.inputs.target_device || env.DEFAULT_TARGET_DEVICE }}
-        path: |
-          openwrt/bin/targets/**/*.bin
-          openwrt/bin/targets/**/*.manifest
-          openwrt/build.log
-        retention-days: 2
+        name: openwrt-zbt-z8102ax-v2-emmc
+        path: ${{ github.workspace }}/bin/targets/mediatek/filogic/
+        retention-days: 30
